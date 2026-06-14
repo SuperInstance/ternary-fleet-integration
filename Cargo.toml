@@ -1,0 +1,12 @@
+[package]
+name = "ternary-fleet-integration"
+version = "0.1.0"
+edition = "2021"
+description = "Bridge crate: wire ternary math (voting, entropy, metrics) into Forgemaster's fleet infrastructure (api-gateway, event-bus, log-aggregator)"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8" }
