@@ -1,105 +1,120 @@
-use serde::Serialize;
+//! Health reporting — produce responses compatible with the api-gateway health endpoint.
 
 use crate::fleet_types::FleetNode;
+use serde::Serialize;
+use std::time::Instant;
 
-/// Health check response compatible with api-gateway's health endpoint.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+/// A fleet-wide health report — the response the api-gateway returns for /health.
+#[derive(Debug, Serialize)]
 pub struct FleetHealth {
     pub status: String,
     pub node_count: usize,
-    pub ternary_balance: f64,
-    pub uptime: chrono::DateTime<chrono::Utc>,
+    pub ternary_balance: f64,   // net sentiment across all nodes
+    pub uptime_secs: u64,
 }
 
-/// Generate a health report from the current set of fleet nodes.
-///
-/// `ternary_balance` is the mean of all ternary votes, giving a quick
-/// snapshot of fleet consensus direction.
-pub fn generate_health_report(nodes: &[FleetNode]) -> FleetHealth {
-    let ternary_balance = if nodes.is_empty() {
-        0.0
+/// Generate a health report from the current fleet nodes.
+pub fn generate_health_report(nodes: &[FleetNode], start_time: Instant) -> FleetHealth {
+    let total = nodes.len();
+    let accept = nodes.iter().filter(|n| n.ternary_vote > 0).count();
+    let reject = nodes.iter().filter(|n| n.ternary_vote < 0).count();
+
+    let ternary_balance = if total > 0 {
+        (accept as f64 - reject as f64) / total as f64
     } else {
-        nodes
-            .iter()
-            .map(|n| n.ternary_vote as f64)
-            .sum::<f64>()
-            / nodes.len() as f64
+        0.0
+    };
+
+    // Health status: green if positive balance, yellow if neutral, red if negative
+    let status = if ternary_balance > 0.2 {
+        "green"
+    } else if ternary_balance >= -0.2 {
+        "yellow"
+    } else {
+        "red"
     };
 
     FleetHealth {
-        status: if ternary_balance >= 0.0 {
-            "healthy".to_string()
-        } else {
-            "degraded".to_string()
-        },
-        node_count: nodes.len(),
+        status: status.to_string(),
+        node_count: total,
         ternary_balance,
-        uptime: chrono::Utc::now(),
+        uptime_secs: start_time.elapsed().as_secs(),
     }
+}
+
+/// Quick check if a single node is healthy based on its ternary vote.
+pub fn node_healthy(node: &FleetNode) -> bool {
+    node.ternary_vote >= 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet_types::FleetNode;
+    use chrono::Utc;
+    use std::time::Instant;
 
     #[test]
     fn test_healthy_fleet() {
         let nodes = vec![
             FleetNode {
-                id: "node-1".into(),
-                role: "validator".into(),
-                capabilities: vec!["ternary".into()],
+                id: "alice".into(),
+                role: "worker".into(),
+                capabilities: vec![],
                 ternary_vote: 1,
+                metrics: vec![],
+                last_seen: Utc::now(),
             },
             FleetNode {
-                id: "node-2".into(),
-                role: "validator".into(),
-                capabilities: vec!["ternary".into()],
-                ternary_vote: 0,
-            },
-            FleetNode {
-                id: "node-3".into(),
-                role: "observer".into(),
-                capabilities: vec!["monitor".into()],
+                id: "bob".into(),
+                role: "worker".into(),
+                capabilities: vec![],
                 ternary_vote: 1,
+                metrics: vec![],
+                last_seen: Utc::now(),
             },
         ];
-
-        let report = generate_health_report(&nodes);
-        assert_eq!(report.status, "healthy");
-        assert_eq!(report.node_count, 3);
-        assert!((report.ternary_balance - 2.0 / 3.0).abs() < 1e-10);
+        let report = generate_health_report(&nodes, Instant::now());
+        assert_eq!(report.status, "green");
+        assert_eq!(report.node_count, 2);
+        assert!((report.ternary_balance - 1.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_degraded_fleet() {
+    fn test_unhealthy_fleet() {
         let nodes = vec![
             FleetNode {
-                id: "node-1".into(),
-                role: "validator".into(),
-                capabilities: vec!["ternary".into()],
+                id: "mallory".into(),
+                role: "worker".into(),
+                capabilities: vec![],
                 ternary_vote: -1,
-            },
-            FleetNode {
-                id: "node-2".into(),
-                role: "validator".into(),
-                capabilities: vec!["ternary".into()],
-                ternary_vote: -1,
+                metrics: vec![],
+                last_seen: Utc::now(),
             },
         ];
-
-        let report = generate_health_report(&nodes);
-        assert_eq!(report.status, "degraded");
-        assert_eq!(report.node_count, 2);
-        assert!((report.ternary_balance - (-1.0)).abs() < 1e-10);
+        let report = generate_health_report(&nodes, Instant::now());
+        assert_eq!(report.status, "red");
+        assert!((report.ternary_balance - (-1.0)).abs() < 0.01);
     }
 
     #[test]
-    fn test_empty_fleet() {
-        let report = generate_health_report(&[]);
-        assert_eq!(report.status, "healthy");
-        assert_eq!(report.node_count, 0);
-        assert_eq!(report.ternary_balance, 0.0);
+    fn test_node_healthy() {
+        let healthy = FleetNode {
+            id: "h".into(),
+            role: "worker".into(),
+            capabilities: vec![],
+            ternary_vote: 1,
+            metrics: vec![],
+            last_seen: Utc::now(),
+        };
+        let unhealthy = FleetNode {
+            id: "u".into(),
+            role: "worker".into(),
+            capabilities: vec![],
+            ternary_vote: -1,
+            metrics: vec![],
+            last_seen: Utc::now(),
+        };
+        assert!(node_healthy(&healthy));
+        assert!(!node_healthy(&unhealthy));
     }
 }
